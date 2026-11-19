@@ -41,6 +41,30 @@ app.get("/services", async (req, res) => {
   res.send(services);
 });
 
+// *** Single Service API ***
+app.get("/services/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // Dummy data te _id holo "svc_01" er moto string,
+    // real MongoDB te _id holo ObjectId — 2 tai support korlam
+    let service = await servicesCollection.findOne({ _id: id });
+
+    if (!service && ObjectId.isValid(id)) {
+      service = await servicesCollection.findOne({ _id: new ObjectId(id) });
+    }
+
+    if (!service) {
+      return res.status(404).send({ message: "Service not found" });
+    }
+
+    res.send(service);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
 
 
 
