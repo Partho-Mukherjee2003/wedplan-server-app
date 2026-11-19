@@ -107,6 +107,46 @@ app.post("/bookings", async (req, res) => {
   }
 });
 
+// ***  Customer er nijer booking / Vendor er kase asha booking  ***
+app.get("/bookings", async (req, res) => {
+  try {
+    const { customerId, vendorId } = req.query;
+    const query = {};
+    if (customerId) query.customerId = customerId;
+    if (vendorId) query.vendorId = vendorId;
+
+    const bookings = await bookingsCollection.find(query).toArray();
+    res.send(bookings);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+// ***  Booking Accept / Reject / Cancel  ***
+app.patch("/bookings/:id", async (req, res) => {
+  try {
+    const { status } = req.body;
+    const id = req.params.id;
+
+    let result = await bookingsCollection.updateOne(
+      { _id: id },
+      { $set: { status } },
+    );
+
+    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+      result = await bookingsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } },
+      );
+    }
+
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+
 
 
 
