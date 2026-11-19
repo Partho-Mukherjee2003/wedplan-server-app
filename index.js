@@ -22,7 +22,8 @@ const DB = await connectToMongoDB();
 const dataBase = DB.db("WedPlan");
 const servicesCollection = dataBase.collection("services");
 const bookingsCollection = dataBase.collection("bookings");
-
+const usersCollection = dataBase.collection("user"); // Better Auth er collection er naam "user"
+const transactionsCollection = dataBase.collection("transactions");
 
 //*******************    Middleware
 app.use(express.json())
@@ -227,7 +228,72 @@ app.delete("/services/:id", async (req, res) => {
   }
 });
 
+// *** Admin Functions  ***
 
+// Sob user ana - Admin er jonno
+app.get("/users", async (req, res) => {
+  try {
+    const users = await usersCollection.find().toArray();
+    res.send(users);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+// *** User Block / Unblock ***
+app.patch("/users/:id/block", async (req, res) => {
+  try {
+    const { isBlocked } = req.body;
+    const id = req.params.id;
+
+    let result = await usersCollection.updateOne(
+      { _id: id },
+      { $set: { isBlocked } }
+    );
+    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+      result = await usersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { isBlocked } }
+      );
+    }
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+// *** Service Approve / Reject - Admin er jonno ***
+app.patch("/services/:id/status", async (req, res) => {
+  try {
+    const { status } = req.body;
+    const id = req.params.id;
+
+    let result = await servicesCollection.updateOne(
+      { _id: id },
+      { $set: { status } }
+    );
+    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+      result = await servicesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } }
+      );
+    }
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+// *** Transaction Functions ***
+// Sob transaction ana - Admin er jonno
+app.get("/transactions", async (req, res) => {
+  try {
+    const transactions = await transactionsCollection.find().toArray();
+    res.send(transactions);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
 
 
 
