@@ -208,24 +208,24 @@ app.patch("/services/:id", async (req, res) => {
   }
 });
 
-// // *** Delete Service - sudhu nijer service ***
-// app.delete("/services/:id", async (req, res) => {
-//   try {
-//     const id = req.params.id;
-//     const { vendorId } = req.query;
+// *** Delete Service - sudhu nijer service ***
+app.delete("/services/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { vendorId } = req.query;
 
-//     let result = await servicesCollection.deleteOne({ _id: id, vendorId });
-//     if (result.deletedCount === 0 && ObjectId.isValid(id)) {
-//       result = await servicesCollection.deleteOne({
-//         _id: new ObjectId(id),
-//         vendorId,
-//       });
-//     }
-//     res.send(result);
-//   } catch (err) {
-//     res.status(500).send({ message: "Server error" });
-//   }
-// });
+    let result = await servicesCollection.deleteOne({ _id: id, vendorId });
+    if (result.deletedCount === 0 && ObjectId.isValid(id)) {
+      result = await servicesCollection.deleteOne({
+        _id: new ObjectId(id),
+        vendorId,
+      });
+    }
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
 
 
 
