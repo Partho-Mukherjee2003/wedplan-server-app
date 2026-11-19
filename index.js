@@ -185,28 +185,28 @@ app.post("/services", async (req, res) => {
   }
 });
 
-// // *** Update Service - sudhu nijer service ***
-// app.patch("/services/:id", async (req, res) => {
-//   try {
-//     const id = req.params.id;
-//     const { vendorId, ...updateData } = req.body;
-//     if (updateData.price) updateData.price = Number(updateData.price);
+// *** Update Service - sudhu nijer service ***
+app.patch("/services/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { vendorId, ...updateData } = req.body;
+    if (updateData.price) updateData.price = Number(updateData.price);
 
-//     let result = await servicesCollection.updateOne(
-//       { _id: id, vendorId },
-//       { $set: updateData }
-//     );
-//     if (result.matchedCount === 0 && ObjectId.isValid(id)) {
-//       result = await servicesCollection.updateOne(
-//         { _id: new ObjectId(id), vendorId },
-//         { $set: updateData }
-//       );
-//     }
-//     res.send(result);
-//   } catch (err) {
-//     res.status(500).send({ message: "Server error" });
-//   }
-// });
+    let result = await servicesCollection.updateOne(
+      { _id: id, vendorId },
+      { $set: updateData }
+    );
+    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+      result = await servicesCollection.updateOne(
+        { _id: new ObjectId(id), vendorId },
+        { $set: updateData }
+      );
+    }
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
 
 // // *** Delete Service - sudhu nijer service ***
 // app.delete("/services/:id", async (req, res) => {
