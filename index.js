@@ -21,7 +21,7 @@ export async function connectToMongoDB() {
 const DB = await connectToMongoDB();
 const dataBase = DB.db("WedPlan");
 const servicesCollection = dataBase.collection("services");
-
+const bookingsCollection = dataBase.collection("bookings");
 
 
 //*******************    Middleware
@@ -65,6 +65,47 @@ app.get("/services/:id", async (req, res) => {
   }
 });
 
+// *** Booking API ***
+app.post("/bookings", async (req, res) => {
+  try {
+    const booking = req.body;
+    // booking = { serviceId, vendorId, customerId, eventDate, eventLocation, message }
+
+    // Rule 1: Vendor nijer service nije book korte parbe na
+    if (booking.vendorId === booking.customerId) {
+      return res
+        .status(403)
+        .send({ message: "You cannot book your own service" });
+    }
+
+    // Rule 2: Ekই service, ekই date e duplicate booking hobe na
+    const existing = await bookingsCollection.findOne({
+      serviceId: booking.serviceId,
+      customerId: booking.customerId,
+      eventDate: booking.eventDate,
+      status: { $in: ["pending", "accepted"] },
+    });
+
+    if (existing) {
+      return res
+        .status(400)
+        .send({ message: "You already booked this service for this date" });
+    }
+
+    // Default status Pending, ar createdAt add kore save koro
+    const newBooking = {
+      ...booking,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = await bookingsCollection.insertOne(newBooking);
+    res.send(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server error" });
+  }
+});
 
 
 
