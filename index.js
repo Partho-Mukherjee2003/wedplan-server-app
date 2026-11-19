@@ -6,7 +6,6 @@ import { MongoClient, ObjectId } from "mongodb";
 const app = express();
 const port = process.env.PORT || 5000;
 
-
 // ******** MongoDB *******
 const client = new MongoClient(process.env.MONGODB_URI);
 export async function connectToMongoDB() {
@@ -26,20 +25,31 @@ const usersCollection = dataBase.collection("user"); // Better Auth er collectio
 const transactionsCollection = dataBase.collection("transactions");
 
 //*******************    Middleware
-app.use(express.json())
-app.use(cors())
+app.use(express.json());
+app.use(cors());
 
+app.get("/", (req, res) => {
+  res.send("WedPlan Server is running");
+});
 
-
-app.get('/', (req,res)=>{
-  res.send("WedPlan Server is running")
-})
 // *** Service API ***
+// Ekhon sob service ashbe. Query dile filter hobe:
+// /services              -> sob service (Admin, Vendor er jonno)
+// /services?status=approved -> sudhu approved (Browse er jonno chaile)
+// /services?vendorId=xxx    -> sudhu oi vendor er service
 app.get("/services", async (req, res) => {
-  const services = await servicesCollection
-    .find({ status: "approved" })
-    .toArray();
-  res.send(services);
+  try {
+    const { status, vendorId } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (vendorId) query.vendorId = vendorId;
+
+    const services = await servicesCollection.find(query).toArray();
+    res.send(services);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server error" });
+  }
 });
 
 // *** Single Service API ***
@@ -70,7 +80,6 @@ app.get("/services/:id", async (req, res) => {
 app.post("/bookings", async (req, res) => {
   try {
     const booking = req.body;
-    // booking = { serviceId, vendorId, customerId, eventDate, eventLocation, message }
 
     // Rule 1: Vendor nijer service nije book korte parbe na
     if (booking.vendorId === booking.customerId) {
@@ -93,7 +102,6 @@ app.post("/bookings", async (req, res) => {
         .send({ message: "You already booked this service for this date" });
     }
 
-    // Default status Pending, ar createdAt add kore save koro
     const newBooking = {
       ...booking,
       status: "pending",
@@ -108,7 +116,7 @@ app.post("/bookings", async (req, res) => {
   }
 });
 
-// ***  Customer er nijer booking / Vendor er kase asha booking  ***
+// *** Customer er nijer booking / Vendor er kase asha booking ***
 app.get("/bookings", async (req, res) => {
   try {
     const { customerId, vendorId } = req.query;
@@ -123,7 +131,7 @@ app.get("/bookings", async (req, res) => {
   }
 });
 
-// ***  Booking Accept / Reject / Cancel  ***
+// *** Booking Accept / Reject / Cancel ***
 app.patch("/bookings/:id", async (req, res) => {
   try {
     const { status } = req.body;
@@ -146,7 +154,6 @@ app.patch("/bookings/:id", async (req, res) => {
     res.status(500).send({ message: "Server error" });
   }
 });
-
 
 // *** Add Service - default Pending ***
 app.post("/services", async (req, res) => {
@@ -186,6 +193,29 @@ app.post("/services", async (req, res) => {
   }
 });
 
+// *** Service Approve / Reject - Admin er jonno ***
+// NOTE: Ei route ta PATCH /services/:id er AGE rakhlam, jeno Express confuse na hoy
+app.patch("/services/:id/status", async (req, res) => {
+  try {
+    const { status } = req.body;
+    const id = req.params.id;
+
+    let result = await servicesCollection.updateOne(
+      { _id: id },
+      { $set: { status } },
+    );
+    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+      result = await servicesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } },
+      );
+    }
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
 // *** Update Service - sudhu nijer service ***
 app.patch("/services/:id", async (req, res) => {
   try {
@@ -195,12 +225,12 @@ app.patch("/services/:id", async (req, res) => {
 
     let result = await servicesCollection.updateOne(
       { _id: id, vendorId },
-      { $set: updateData }
+      { $set: updateData },
     );
     if (result.matchedCount === 0 && ObjectId.isValid(id)) {
       result = await servicesCollection.updateOne(
         { _id: new ObjectId(id), vendorId },
-        { $set: updateData }
+        { $set: updateData },
       );
     }
     res.send(result);
@@ -228,7 +258,7 @@ app.delete("/services/:id", async (req, res) => {
   }
 });
 
-// *** Admin Functions  ***
+// *** Admin Functions ***
 
 // Sob user ana - Admin er jonno
 app.get("/users", async (req, res) => {
@@ -248,34 +278,12 @@ app.patch("/users/:id/block", async (req, res) => {
 
     let result = await usersCollection.updateOne(
       { _id: id },
-      { $set: { isBlocked } }
+      { $set: { isBlocked } },
     );
     if (result.matchedCount === 0 && ObjectId.isValid(id)) {
       result = await usersCollection.updateOne(
         { _id: new ObjectId(id) },
-        { $set: { isBlocked } }
-      );
-    }
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
-
-// *** Service Approve / Reject - Admin er jonno ***
-app.patch("/services/:id/status", async (req, res) => {
-  try {
-    const { status } = req.body;
-    const id = req.params.id;
-
-    let result = await servicesCollection.updateOne(
-      { _id: id },
-      { $set: { status } }
-    );
-    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
-      result = await servicesCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status } }
+        { $set: { isBlocked } },
       );
     }
     res.send(result);
@@ -290,6 +298,56 @@ app.get("/transactions", async (req, res) => {
   try {
     const transactions = await transactionsCollection.find().toArray();
     res.send(transactions);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+//*** Customer Functions ***
+// *** Booking Accept / Reject / Cancel ***
+app.patch("/bookings/:id", async (req, res) => {
+  try {
+    const { status, customerId, vendorId } = req.body;
+    const id = req.params.id;
+
+    // Age booking ta khujo
+    let booking = await bookingsCollection.findOne({ _id: id });
+    if (!booking && ObjectId.isValid(id)) {
+      booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+    }
+    if (!booking) {
+      return res.status(404).send({ message: "Booking not found" });
+    }
+
+    // Sudhu pending booking ei change hobe
+    if (booking.status !== "pending") {
+      return res.status(400).send({
+        message: "This booking has already been processed",
+      });
+    }
+
+    // Customer cancel korle - sudhu nijer booking
+    if (status === "cancelled" && booking.customerId !== customerId) {
+      return res.status(403).send({
+        message: "You cannot cancel another customer's booking",
+      });
+    }
+
+    // Vendor accept/reject korle - sudhu nijer service er booking
+    if (
+      (status === "accepted" || status === "rejected") &&
+      booking.vendorId !== vendorId
+    ) {
+      return res.status(403).send({
+        message: "You cannot modify another vendor's booking",
+      });
+    }
+
+    let result = await bookingsCollection.updateOne(
+      { _id: booking._id },
+      { $set: { status } }
+    );
+    res.send(result);
   } catch (err) {
     res.status(500).send({ message: "Server error" });
   }
