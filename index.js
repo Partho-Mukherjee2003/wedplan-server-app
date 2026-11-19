@@ -147,6 +147,87 @@ app.patch("/bookings/:id", async (req, res) => {
 });
 
 
+// *** Add Service - default Pending ***
+app.post("/services", async (req, res) => {
+  try {
+    const service = req.body;
+
+    // Free vendor hole 3 tar beshi active (approved) service parbe na
+    if (service.subscriptionPlan === "free") {
+      const activeCount = await servicesCollection.countDocuments({
+        vendorId: service.vendorId,
+        status: "approved",
+      });
+      if (activeCount >= 3) {
+        return res.status(403).send({
+          message:
+            "Free plan limit reached. Upgrade to Premium for unlimited services.",
+        });
+      }
+    }
+
+    const newService = {
+      vendorId: service.vendorId,
+      serviceName: service.serviceName,
+      category: service.category,
+      description: service.description,
+      price: Number(service.price),
+      location: service.location,
+      images: service.images,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = await servicesCollection.insertOne(newService);
+    res.send(result);
+  } catch (err) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+// // *** Update Service - sudhu nijer service ***
+// app.patch("/services/:id", async (req, res) => {
+//   try {
+//     const id = req.params.id;
+//     const { vendorId, ...updateData } = req.body;
+//     if (updateData.price) updateData.price = Number(updateData.price);
+
+//     let result = await servicesCollection.updateOne(
+//       { _id: id, vendorId },
+//       { $set: updateData }
+//     );
+//     if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+//       result = await servicesCollection.updateOne(
+//         { _id: new ObjectId(id), vendorId },
+//         { $set: updateData }
+//       );
+//     }
+//     res.send(result);
+//   } catch (err) {
+//     res.status(500).send({ message: "Server error" });
+//   }
+// });
+
+// // *** Delete Service - sudhu nijer service ***
+// app.delete("/services/:id", async (req, res) => {
+//   try {
+//     const id = req.params.id;
+//     const { vendorId } = req.query;
+
+//     let result = await servicesCollection.deleteOne({ _id: id, vendorId });
+//     if (result.deletedCount === 0 && ObjectId.isValid(id)) {
+//       result = await servicesCollection.deleteOne({
+//         _id: new ObjectId(id),
+//         vendorId,
+//       });
+//     }
+//     res.send(result);
+//   } catch (err) {
+//     res.status(500).send({ message: "Server error" });
+//   }
+// });
+
+
 
 
 
