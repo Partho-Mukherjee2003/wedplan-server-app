@@ -56,6 +56,16 @@ const bookingsCollection = dataBase.collection("bookings");
 const usersCollection = dataBase.collection("user"); // Better Auth er collection er naam "user"
 const transactionsCollection = dataBase.collection("transactions");
 
+// Ekই Stripe session diye 2 bar transaction hobe na (unique index)
+try {
+  await transactionsCollection.createIndex(
+    { stripeSessionId: 1 },
+    { unique: true, sparse: true },
+  );
+} catch (err) {
+  console.log("Unique index error:", err.message);
+}
+
 // ------------------------------------------------------------
 //  SECTION 4: HELPER FUNCTION
 //  Dummy data te _id holo "svc_01" er moto string,
@@ -520,19 +530,30 @@ app.post("/webhook", async (req, res) => {
     const vendorId = session.metadata?.vendorId;
 
     if (vendorId) {
-      // Duplicate check: ei session er transaction age thekei thakle
-      // abar insert korbo na (Stripe ekই event 2 bar pathate pare)
-      const existingTx = await transactionsCollection.findOne({
-        stripeSessionId: session.id,
-      });
-      if (existingTx) {
-        return res.send({ received: true });
+      // 1. Age transaction insert koro (unique index duplicate atkabe)
+      try {
+        await transactionsCollection.insertOne({
+          vendorId,
+          plan: "premium",
+          amount: 4999,
+          currency: "bdt",
+          stripeSessionId: session.id,
+          stripeSubscriptionId: session.subscription || null,
+          status: "succeeded",
+          createdAt: new Date(),
+        });
+      } catch (err) {
+        // Duplicate key (11000) mane ei session agei process hoyeche
+        if (err.code === 11000) {
+          return res.send({ received: true });
+        }
+        throw err;
       }
 
+      // 2. Ebar Vendor ke Premium koro
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
 
-      // 1. Vendor ke Premium koro
       const vendor = await findById(usersCollection, vendorId);
       if (vendor) {
         await usersCollection.updateOne(
@@ -545,24 +566,11 @@ app.post("/webhook", async (req, res) => {
           },
         );
       }
-
-      // 2. Transaction record rakho
-      await transactionsCollection.insertOne({
-        vendorId,
-        plan: "premium",
-        amount: 4999,
-        currency: "bdt",
-        stripeSessionId: session.id,
-        stripeSubscriptionId: session.subscription || null,
-        status: "succeeded",
-        createdAt: new Date(),
-      });
     }
   }
 
   res.send({ received: true });
 });
-
 
 // ============================================================
 //  SECTION 11: SERVER START
