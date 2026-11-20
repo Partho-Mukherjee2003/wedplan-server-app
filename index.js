@@ -10,16 +10,25 @@ import express from "express";
 import "dotenv/config";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
+import Stripe from "stripe";
 
 // ------------------------------------------------------------
 //  SECTION 2: APP + MIDDLEWARE
 //  - express.json() : frontend theke asha JSON body porar jonno
+//                     (verify diye rawBody o rakha hoy — Stripe
+//                      webhook signature check er jonno lagbe)
 //  - cors()         : client (port 3000) theke API call er permission
 // ------------------------------------------------------------
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 app.use(cors());
 
 // ------------------------------------------------------------
@@ -398,10 +407,6 @@ app.patch("/users/:id/block", async (req, res) => {
 
 // PATCH /services/:id/status
 // Page: Admin Manage Services er Approve/Reject button
-// NOTE: Ei route ta PATCH /services/:id er AGE rakhte hobe,
-//       na hole Express /:id route er sathe confuse hobe.
-//       (Ekhane Admin section e thakleo Express order onujayi
-//        /services/:id/status age match korbe karon eta beshi specific)
 app.patch("/services/:id/status", async (req, res) => {
   try {
     const { status } = req.body;
@@ -433,6 +438,120 @@ app.get("/transactions", async (req, res) => {
   } catch (err) {
     res.status(500).send({ message: "Server error" });
   }
+});
+
+// ============================================================
+//  SECTION 10B: STRIPE PAYMENT ROUTES
+//  Page: Vendor Subscription page (Upgrade to Premium button)
+// ============================================================
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// POST /create-checkout-session
+// Vendor "Upgrade to Premium" button e click korle Stripe er
+// payment page er link baniye dey (৳4,999, 30 diner Premium)
+app.post("/create-checkout-session", async (req, res) => {
+  try {
+    const { vendorId, vendorEmail } = req.body;
+
+    if (!vendorId) {
+      return res.status(400).send({ message: "Vendor ID is required." });
+    }
+
+    const vendor = await findById(usersCollection, vendorId);
+    if (!vendor) {
+      return res.status(404).send({ message: "Vendor not found." });
+    }
+    if (vendor.subscriptionPlan === "premium") {
+      return res
+        .status(400)
+        .send({ message: "You already have the Premium plan." });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      customer_email: vendorEmail || vendor.email,
+      line_items: [
+        {
+          price_data: {
+            currency: "bdt",
+            product_data: {
+              name: "WedPlan Premium Vendor Plan",
+              description:
+                "Premium plan for 30 days: unlimited services and premium badge.",
+            },
+            unit_amount: 499900, // ৳4,999 (paisa te)
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: { vendorId },
+      success_url: `${process.env.CLIENT_URL || "http://localhost:3000"}/payment/success`,
+      cancel_url: `${process.env.CLIENT_URL || "http://localhost:3000"}/payment/cancel`,
+    });
+
+    res.send({ url: session.url });
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({ message: "Could not start payment." });
+  }
+});
+
+// POST /webhook
+// Payment shesh hole Stripe nijei ei route e khobor pathay.
+// PDF rule: Premium sudhu ekhanei hobe (verified webhook),
+// success page theke na.
+app.post("/webhook", async (req, res) => {
+  const signature = req.headers["stripe-signature"];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.rawBody,
+      signature,
+      process.env.STRIPE_WEBHOOK_SECRET,
+    );
+  } catch (error) {
+    console.log("Webhook signature failed:", error.message);
+    return res.status(400).send(`Webhook Error: ${error.message}`);
+  }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const vendorId = session.metadata?.vendorId;
+
+    if (vendorId) {
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      // 1. Vendor ke Premium koro
+      const vendor = await findById(usersCollection, vendorId);
+      if (vendor) {
+        await usersCollection.updateOne(
+          { _id: vendor._id },
+          {
+            $set: {
+              subscriptionPlan: "premium",
+              subscriptionExpiresAt: expiresAt,
+            },
+          },
+        );
+      }
+
+      // 2. Transaction record rakho
+      await transactionsCollection.insertOne({
+        vendorId,
+        plan: "premium",
+        amount: 4999,
+        currency: "bdt",
+        stripeSessionId: session.id,
+        stripeSubscriptionId: session.subscription || null,
+        status: "succeeded",
+        createdAt: new Date(),
+      });
+    }
+  }
+
+  res.send({ received: true });
 });
 
 // ============================================================
