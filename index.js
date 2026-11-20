@@ -556,7 +556,12 @@ app.post("/webhook", async (req, res) => {
 
 // ============================================================
 //  SECTION 11: SERVER START
+//  Local e cholle listen korbe, Vercel e export hobe
 // ============================================================
-app.listen(port, () => {
-  console.log(`WedPlan server listening on port ${port}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`WedPlan server listening on port ${port}`);
+  });
+}
+
+export default app;
