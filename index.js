@@ -520,6 +520,15 @@ app.post("/webhook", async (req, res) => {
     const vendorId = session.metadata?.vendorId;
 
     if (vendorId) {
+      // Duplicate check: ei session er transaction age thekei thakle
+      // abar insert korbo na (Stripe ekই event 2 bar pathate pare)
+      const existingTx = await transactionsCollection.findOne({
+        stripeSessionId: session.id,
+      });
+      if (existingTx) {
+        return res.send({ received: true });
+      }
+
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
 
@@ -553,6 +562,7 @@ app.post("/webhook", async (req, res) => {
 
   res.send({ received: true });
 });
+
 
 // ============================================================
 //  SECTION 11: SERVER START
