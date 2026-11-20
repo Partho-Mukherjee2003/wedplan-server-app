@@ -11,6 +11,7 @@ import "dotenv/config";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
 import Stripe from "stripe";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 // ------------------------------------------------------------
 //  SECTION 2: APP + MIDDLEWARE
@@ -81,6 +82,56 @@ async function findById(collection, id) {
 }
 
 // ------------------------------------------------------------
+//  SECTION 4B: JWT SECURITY MIDDLEWARE
+//  PDF rule: JWT verification + role check server ei hobe.
+//  Client er pathano user ID / role bisshash kora hobe na —
+//  user ke token theke niye DB theke role check kora hoy.
+//  Token na thakle/vul hole 401, role na mille 403.
+// ------------------------------------------------------------
+const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+const JWKS = createRemoteJWKSet(new URL(`${CLIENT_URL}/api/auth/jwks`));
+
+async function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "Unauthorized. Please sign in." });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: CLIENT_URL,
+      audience: CLIENT_URL,
+    });
+
+    const user = await findById(usersCollection, payload.sub);
+    if (!user) {
+      return res.status(401).send({ message: "User not found." });
+    }
+    if (user.isBlocked) {
+      return res.status(403).send({ message: "Your account is blocked." });
+    }
+
+    req.user = user;
+    next();
+  } catch {
+    return res.status(401).send({ message: "Invalid or expired token." });
+  }
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res
+        .status(403)
+        .send({ message: "Forbidden. You do not have access." });
+    }
+    next();
+  };
+}
+
+// ------------------------------------------------------------
 //  SECTION 5: ROOT ROUTE
 //  Page: Browser e server khulle ei message dekhabe
 // ------------------------------------------------------------
@@ -140,67 +191,71 @@ app.get("/services/:id", async (req, res) => {
 // POST /bookings
 // Page: Service Details er booking form submit hole ekhane ashbe
 // Rules:
-//   1. Vendor nijer service nije book korte parbe na
-//   2. Blocked customer booking korte parbe na
-//   3. Sudhu approved service ei booking hobe
-//   4. Ekই service, ekই date e duplicate booking hobe na
-app.post("/bookings", async (req, res) => {
-  try {
-    const booking = req.body;
+//   1. Sudhu customer booking korte parbe (JWT role check)
+//   2. Vendor nijer service nije book korte parbe na
+//   3. Blocked customer booking korte parbe na (middleware tei check)
+//   4. Sudhu approved service ei booking hobe
+//   5. Ekই service, ekই date e duplicate booking hobe na
+app.post(
+  "/bookings",
+  verifyToken,
+  requireRole("customer"),
+  async (req, res) => {
+    try {
+      const booking = req.body;
 
-    // Rule 1: Vendor nijer service nije book korte parbe na
-    if (booking.vendorId === booking.customerId) {
-      return res
-        .status(403)
-        .send({ message: "You cannot book your own service" });
-    }
+      // Customer ID token theke (client er pathano ID bisshash na)
+      booking.customerId = String(req.user._id);
 
-    // Rule 2: Blocked customer booking korte parbe na
-    const customer = await findById(usersCollection, booking.customerId);
-    if (customer?.isBlocked) {
-      return res.status(403).send({
-        message: "Your account is blocked. You cannot make bookings.",
+      // Rule 4 age: Sudhu approved service ei booking hobe
+      const service = await findById(servicesCollection, booking.serviceId);
+      if (!service) {
+        return res.status(404).send({ message: "Service not found" });
+      }
+      if (service.status !== "approved") {
+        return res.status(400).send({
+          message: "This service is not available for booking",
+        });
+      }
+
+      // Vendor ID service theke (client er pathano ID bisshash na)
+      booking.vendorId = service.vendorId;
+
+      // Rule 2: Vendor nijer service nije book korte parbe na
+      if (booking.vendorId === booking.customerId) {
+        return res
+          .status(403)
+          .send({ message: "You cannot book your own service" });
+      }
+
+      // Rule 5: Duplicate booking check (same service + same date)
+      const existing = await bookingsCollection.findOne({
+        serviceId: booking.serviceId,
+        customerId: booking.customerId,
+        eventDate: booking.eventDate,
+        status: { $in: ["pending", "accepted"] },
       });
+
+      if (existing) {
+        return res
+          .status(400)
+          .send({ message: "You already booked this service for this date" });
+      }
+
+      const newBooking = {
+        ...booking,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      };
+
+      const result = await bookingsCollection.insertOne(newBooking);
+      res.send(result);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ message: "Server error" });
     }
-
-    // Rule 3: Sudhu approved service ei booking hobe
-    const service = await findById(servicesCollection, booking.serviceId);
-    if (!service) {
-      return res.status(404).send({ message: "Service not found" });
-    }
-    if (service.status !== "approved") {
-      return res.status(400).send({
-        message: "This service is not available for booking",
-      });
-    }
-
-    // Rule 4: Duplicate booking check (same service + same date)
-    const existing = await bookingsCollection.findOne({
-      serviceId: booking.serviceId,
-      customerId: booking.customerId,
-      eventDate: booking.eventDate,
-      status: { $in: ["pending", "accepted"] },
-    });
-
-    if (existing) {
-      return res
-        .status(400)
-        .send({ message: "You already booked this service for this date" });
-    }
-
-    const newBooking = {
-      ...booking,
-      status: "pending",
-      createdAt: new Date().toISOString(),
-    };
-
-    const result = await bookingsCollection.insertOne(newBooking);
-    res.send(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Server error" });
-  }
-});
+  },
+);
 
 // ============================================================
 //  SECTION 8: BOOKING ROUTES (Customer + Vendor shared)
@@ -212,7 +267,7 @@ app.post("/bookings", async (req, res) => {
 //   /bookings?customerId=xxx -> Customer er nijer booking (My Bookings)
 //   /bookings?vendorId=xxx   -> Vendor er kase asha booking (Booking Requests)
 //   /bookings                -> sob booking (Admin Overview count)
-app.get("/bookings", async (req, res) => {
+app.get("/bookings", verifyToken, async (req, res) => {
   try {
     const { customerId, vendorId } = req.query;
     const query = {};
@@ -230,12 +285,13 @@ app.get("/bookings", async (req, res) => {
 // Page: Customer My Bookings (Cancel), Vendor Booking Requests (Accept/Reject)
 // Rules:
 //   - Sudhu pending booking ei change hobe
-//   - Customer sudhu nijer booking cancel korte parbe
+//   - Customer sudhu nijer booking cancel korte parbe (token er ID diye check)
 //   - Vendor sudhu nijer service er booking accept/reject korte parbe
-app.patch("/bookings/:id", async (req, res) => {
+app.patch("/bookings/:id", verifyToken, async (req, res) => {
   try {
-    const { status, customerId, vendorId } = req.body;
+    const { status } = req.body;
     const id = req.params.id;
+    const userId = String(req.user._id);
 
     // Age booking ta khujo
     const booking = await findById(bookingsCollection, id);
@@ -251,7 +307,7 @@ app.patch("/bookings/:id", async (req, res) => {
     }
 
     // Customer cancel korle - sudhu nijer booking
-    if (status === "cancelled" && booking.customerId !== customerId) {
+    if (status === "cancelled" && booking.customerId !== userId) {
       return res.status(403).send({
         message: "You cannot cancel another customer's booking",
       });
@@ -260,7 +316,7 @@ app.patch("/bookings/:id", async (req, res) => {
     // Vendor accept/reject korle - sudhu nijer service er booking
     if (
       (status === "accepted" || status === "rejected") &&
-      booking.vendorId !== vendorId
+      booking.vendorId !== userId
     ) {
       return res.status(403).send({
         message: "You cannot modify another vendor's booking",
@@ -285,16 +341,21 @@ app.patch("/bookings/:id", async (req, res) => {
 // POST /services
 // Page: Vendor Add Service form
 // Rules:
+//   - Sudhu vendor service add korte parbe (JWT role check)
 //   - Default status: pending (admin approve na kora porjonto public e dekhabe na)
 //   - Free vendor: max 3 ta active (approved) service
-app.post("/services", async (req, res) => {
+app.post("/services", verifyToken, requireRole("vendor"), async (req, res) => {
   try {
     const service = req.body;
 
+    // Vendor ID + plan token/DB theke (client er pathano value bisshash na)
+    const vendorId = String(req.user._id);
+    const subscriptionPlan = req.user.subscriptionPlan || "free";
+
     // Free vendor hole 3 tar beshi active (approved) service parbe na
-    if (service.subscriptionPlan === "free") {
+    if (subscriptionPlan === "free") {
       const activeCount = await servicesCollection.countDocuments({
-        vendorId: service.vendorId,
+        vendorId,
         status: "approved",
       });
       if (activeCount >= 3) {
@@ -306,7 +367,7 @@ app.post("/services", async (req, res) => {
     }
 
     const newService = {
-      vendorId: service.vendorId,
+      vendorId,
       serviceName: service.serviceName,
       category: service.category,
       description: service.description,
@@ -326,52 +387,64 @@ app.post("/services", async (req, res) => {
 
 // PATCH /services/:id
 // Page: Vendor My Services er Update form
-// Rule: Sudhu nijer service update korte parbe
-app.patch("/services/:id", async (req, res) => {
-  try {
-    const id = req.params.id;
-    const { vendorId, ...updateData } = req.body;
-    if (updateData.price) updateData.price = Number(updateData.price);
+// Rule: Sudhu nijer service update korte parbe (token er ID diye check)
+app.patch(
+  "/services/:id",
+  verifyToken,
+  requireRole("vendor"),
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+      const { vendorId: _ignored, ...updateData } = req.body;
+      if (updateData.price) updateData.price = Number(updateData.price);
+      const vendorId = String(req.user._id);
 
-    let result = await servicesCollection.updateOne(
-      { _id: id, vendorId },
-      { $set: updateData },
-    );
-    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
-      result = await servicesCollection.updateOne(
-        { _id: new ObjectId(id), vendorId },
+      let result = await servicesCollection.updateOne(
+        { _id: id, vendorId },
         { $set: updateData },
       );
+      if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+        result = await servicesCollection.updateOne(
+          { _id: new ObjectId(id), vendorId },
+          { $set: updateData },
+        );
+      }
+      res.send(result);
+    } catch (err) {
+      res.status(500).send({ message: "Server error" });
     }
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
+  },
+);
 
 // DELETE /services/:id
 // Page: Vendor My Services (Delete), Admin Manage Services (Delete)
-//   - vendorId query dile: sudhu nijer service delete hobe (Vendor)
-//   - vendorId na dile: id diye delete hobe (Admin)
-app.delete("/services/:id", async (req, res) => {
-  try {
-    const id = req.params.id;
-    const { vendorId } = req.query;
+//   - Vendor hole: sudhu nijer service delete hobe
+//   - Admin hole: id diye delete hobe
+app.delete(
+  "/services/:id",
+  verifyToken,
+  requireRole("vendor", "admin"),
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+      const isAdmin = req.user.role === "admin";
+      const vendorId = String(req.user._id);
 
-    const query = vendorId ? { _id: id, vendorId } : { _id: id };
+      const query = isAdmin ? { _id: id } : { _id: id, vendorId };
 
-    let result = await servicesCollection.deleteOne(query);
-    if (result.deletedCount === 0 && ObjectId.isValid(id)) {
-      const query2 = vendorId
-        ? { _id: new ObjectId(id), vendorId }
-        : { _id: new ObjectId(id) };
-      result = await servicesCollection.deleteOne(query2);
+      let result = await servicesCollection.deleteOne(query);
+      if (result.deletedCount === 0 && ObjectId.isValid(id)) {
+        const query2 = isAdmin
+          ? { _id: new ObjectId(id) }
+          : { _id: new ObjectId(id), vendorId };
+        result = await servicesCollection.deleteOne(query2);
+      }
+      res.send(result);
+    } catch (err) {
+      res.status(500).send({ message: "Server error" });
     }
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
+  },
+);
 
 // ============================================================
 //  SECTION 10: ADMIN ROUTES
@@ -394,61 +467,76 @@ app.get("/users", async (req, res) => {
 
 // PATCH /users/:id/block
 // Page: Admin Manage Users er Block/Unblock button
-app.patch("/users/:id/block", async (req, res) => {
-  try {
-    const { isBlocked } = req.body;
-    const id = req.params.id;
+app.patch(
+  "/users/:id/block",
+  verifyToken,
+  requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { isBlocked } = req.body;
+      const id = req.params.id;
 
-    let result = await usersCollection.updateOne(
-      { _id: id },
-      { $set: { isBlocked } },
-    );
-    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
-      result = await usersCollection.updateOne(
-        { _id: new ObjectId(id) },
+      let result = await usersCollection.updateOne(
+        { _id: id },
         { $set: { isBlocked } },
       );
+      if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+        result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { isBlocked } },
+        );
+      }
+      res.send(result);
+    } catch (err) {
+      res.status(500).send({ message: "Server error" });
     }
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
+  },
+);
 
 // PATCH /services/:id/status
 // Page: Admin Manage Services er Approve/Reject button
-app.patch("/services/:id/status", async (req, res) => {
-  try {
-    const { status } = req.body;
-    const id = req.params.id;
+app.patch(
+  "/services/:id/status",
+  verifyToken,
+  requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { status } = req.body;
+      const id = req.params.id;
 
-    let result = await servicesCollection.updateOne(
-      { _id: id },
-      { $set: { status } },
-    );
-    if (result.matchedCount === 0 && ObjectId.isValid(id)) {
-      result = await servicesCollection.updateOne(
-        { _id: new ObjectId(id) },
+      let result = await servicesCollection.updateOne(
+        { _id: id },
         { $set: { status } },
       );
+      if (result.matchedCount === 0 && ObjectId.isValid(id)) {
+        result = await servicesCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } },
+        );
+      }
+      res.send(result);
+    } catch (err) {
+      res.status(500).send({ message: "Server error" });
     }
-    res.send(result);
-  } catch (err) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
+  },
+);
 
 // GET /transactions
 // Page: Admin Transactions, Admin Overview (revenue count)
 // Rule: View only — admin manually change korte parbe na
-app.get("/transactions", async (req, res) => {
-  try {
-    const transactions = await transactionsCollection.find().toArray();
-    res.send(transactions);
-  } catch (err) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
+app.get(
+  "/transactions",
+  verifyToken,
+  requireRole("admin"),
+  async (req, res) => {
+    try {
+      const transactions = await transactionsCollection.find().toArray();
+      res.send(transactions);
+    } catch (err) {
+      res.status(500).send({ message: "Server error" });
+    }
+  },
+);
 
 // ============================================================
 //  SECTION 10B: STRIPE PAYMENT ROUTES
@@ -459,52 +547,53 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 // POST /create-checkout-session
 // Vendor "Upgrade to Premium" button e click korle Stripe er
 // payment page er link baniye dey (৳4,999, 30 diner Premium)
-app.post("/create-checkout-session", async (req, res) => {
-  try {
-    const { vendorId, vendorEmail } = req.body;
+app.post(
+  "/create-checkout-session",
+  verifyToken,
+  requireRole("vendor"),
+  async (req, res) => {
+    try {
+      const { vendorEmail } = req.body;
 
-    if (!vendorId) {
-      return res.status(400).send({ message: "Vendor ID is required." });
-    }
+      // Vendor token/DB theke (client er pathano ID bisshash na)
+      const vendor = req.user;
+      const vendorId = String(vendor._id);
 
-    const vendor = await findById(usersCollection, vendorId);
-    if (!vendor) {
-      return res.status(404).send({ message: "Vendor not found." });
-    }
-    if (vendor.subscriptionPlan === "premium") {
-      return res
-        .status(400)
-        .send({ message: "You already have the Premium plan." });
-    }
+      if (vendor.subscriptionPlan === "premium") {
+        return res
+          .status(400)
+          .send({ message: "You already have the Premium plan." });
+      }
 
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      customer_email: vendorEmail || vendor.email,
-      line_items: [
-        {
-          price_data: {
-            currency: "bdt",
-            product_data: {
-              name: "WedPlan Premium Vendor Plan",
-              description:
-                "Premium plan for 30 days: unlimited services and premium badge.",
+      const session = await stripe.checkout.sessions.create({
+        mode: "payment",
+        customer_email: vendorEmail || vendor.email,
+        line_items: [
+          {
+            price_data: {
+              currency: "bdt",
+              product_data: {
+                name: "WedPlan Premium Vendor Plan",
+                description:
+                  "Premium plan for 30 days: unlimited services and premium badge.",
+              },
+              unit_amount: 499900, // ৳4,999 (paisa te)
             },
-            unit_amount: 499900, // ৳4,999 (paisa te)
+            quantity: 1,
           },
-          quantity: 1,
-        },
-      ],
-      metadata: { vendorId },
-      success_url: `${process.env.CLIENT_URL || "http://localhost:3000"}/payment/success`,
-      cancel_url: `${process.env.CLIENT_URL || "http://localhost:3000"}/payment/cancel`,
-    });
+        ],
+        metadata: { vendorId },
+        success_url: `${process.env.CLIENT_URL || "http://localhost:3000"}/payment/success`,
+        cancel_url: `${process.env.CLIENT_URL || "http://localhost:3000"}/payment/cancel`,
+      });
 
-    res.send({ url: session.url });
-  } catch (error) {
-    console.log(error);
-    res.status(500).send({ message: "Could not start payment." });
-  }
-});
+      res.send({ url: session.url });
+    } catch (error) {
+      console.log(error);
+      res.status(500).send({ message: "Could not start payment." });
+    }
+  },
+);
 
 // POST /webhook
 // Payment shesh hole Stripe nijei ei route e khobor pathay.
